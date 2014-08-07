@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Upload To S3</title>
+        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    </head>
+    <body>
+            <!-- File upload interface -->
+            <div class="mediaUploader" id="dragandrophandler">
+                <div class="mediaCentre">
+                    <h1 id="file-message"><span class="glyphicon glyphicon-plus"></span> Drop files</h1>
+                </div>
+            </div>
+        <script src="js/jquery-1.9.1.min.js"></script>
+        <script src="js/jquery-ui.min.js"></script>
+        <script src="js/upload.js"></script>
+        <script>
+            $.fn.serializeObject = function() {
+                var o = {};
+                var a = this.serializeArray();
+                $.each(a, function() {
+                    if (o[this.name] !== undefined) {
+                        if (!o[this.name].push) {
+                            o[this.name] = [o[this.name]];
+                        }
+                        o[this.name].push(this.value || '');
+                    } else {
+                        o[this.name] = this.value || '';
+                    }
+                });
+                return o;
+            };
+
+            var FILES = {};
+
+            function createStatusBar(file) {
+                var file_id = makeid();
+                FILES[file_id] = file;
+                var html = createUploadItem(file[0], file_id);
+                $('.mediaCentre').prepend(html);
+            }
+
+            function makeid() {
+                var text = "";
+                var possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+                for( var i=0; i < 7; i++ )
+                text += possible.charAt(Math.floor(Math.random() * possible.length));
+                return text;
+            }
+
+            function createUploadItem(file, file_id) {
+                var media_item = '';
+                media_item += '<div>';
+                media_item += '<span>' + file.name + '</span>';
+                media_item += '<progress id="progress-' + file_id + '" value="0" max="100"></progress>';
+                media_item += '<button type="button" onclick="upload(\'' + file_id + '\')" class="btn btn-sm btn-default">Upload</button>';
+                media_item += '<button type="button" onclick="cancel(\'' + file_id + '\')" class="btn btn-sm btn-default">Cancel</button>';
+                media_item += '<button type="button" onclick="pause(\'' + file_id + '\')" class="btn btn-sm btn-default">Pause</button>';
+                media_item += '<button type="button" onclick="resume(\'' + file_id + '\')" class="btn btn-sm btn-default">Resume</button>';
+                media_item += '</div>';
+                return media_item;
+            }
+
+            var obj = $("#dragandrophandler");
+            obj.on('dragenter', function (e) {
+                e.stopPropagation();
+                e.preventDefault();
+                $(this).css('border', '2px solid #0B85A1');
+            });
+            obj.on('dragover', function (e) {
+                 e.stopPropagation();
+                 e.preventDefault();
+            });
+            obj.on('drop', function (e) {
+                $(this).css('border', '2px dotted #0B85A1');
+                e.preventDefault();
+                var files = e.originalEvent.dataTransfer.files;
+                createStatusBar(files);
+                $('#file-message').hide();
+                 //We need to send dropped files to Server
+            });
+
+            // Prevent dropped files from opening in browser
+            $(document).on('dragenter', function (e) {
+                e.stopPropagation();
+                e.preventDefault();
+            });
+
+            $(document).on('dragover', function (e) {
+              e.stopPropagation();
+              e.preventDefault();
+              obj.css('border', '2px dotted #0B85A1');
+            });
+
+            $(document).on('drop', function (e) {
+                e.stopPropagation();
+                e.preventDefault();
+            });
+
+            $('#mediaCreateForm').on('submit', function(e){
+                e.preventDefault();
+                var data = $(this).serializeObject();
+                var url = $(this).attr('action');
+                $.ajax({
+                    type: "POST",
+                    url: url,
+                    data: data,
+                    success: function(data) {
+                        console.log(data)
+                        $('#mediaCreateForm').hide();
+                        $('.mediaUploader').show();
+                    },
+                    error: function(jqXHR, textStatus, errorThrown) {
+                        console.group();
+                            var errors = $.parseJSON(jqXHR.responseText);
+                            $.each(errors.error, function (key, value) {
+                                $('.mediaCreateErrors').append(value + ' ');    
+                            });
+                    }
+                });
+            })
+        </script>
+        <script>
+                var s3upload = null;
+
+                function pause(file_id) {
+                    FILES[file_id]['upload'].pause();
+                }
+
+                function resume(file_id) {
+                    FILES[file_id]['upload'].resume();
+                }
+
+                function cancel(file_id) {
+                    FILES[file_id]['upload'].cancel();
+                    FILES[file_id] = null;
+                }
+
+                function upload(file_id) {
+                    if (!(window.File && window.FileReader && window.FileList && window.Blob && window.Blob.prototype.slice)) {
+                        alert("Sorry! You are using an older or unsupported browser. Please update your browser");
+                        return;
+                    }
+                    var content = {
+                        'file_id': file_id,
+                        'user': 'user', 
+                        'pass': 'pass'
+                    }
+                    FILES[file_id]['upload'] = new S3MultiUpload(FILES[file_id][0], content);
+
+                    // s3upload.onServerError = function(command, jqXHR, textStatus, errorThrown) {
+                    FILES[file_id]['upload'].onServerError = function(command, jqXHR, textStatus, errorThrown) {
+                        if (jqXHR.status === 403) {
+                            alert("Sorry you are not allowed to upload");
+                        } else {
+                            console.log("Our server is not responding correctly");
+                        }
+                    };
+
+                    // s3upload.onS3UploadError = function(xhr) {
+                    FILES[file_id]['upload'].onS3UploadError = function(xhr) {
+                        s3upload.waitRetry();
+                        alert("Upload is failing, we will retry in " + s3upload.RETRY_WAIT_SEC + " seconds");
+                    };
+
+                    // s3upload.onProgressChanged = function(uploadingSize, uploadedSize, totalSize) {
+                    FILES[file_id]['upload'].onProgressChanged = function(uploadingSize, uploadedSize, totalSize) {
+                        var percent_loaded = 100 * (uploadedSize / totalSize) ;
+                        console.group('Uploading chunk');
+                            console.log('uploadingSize: '+uploadingSize);
+                            console.log('uploadedSize: '+uploadedSize);
+                            console.log('totalSize: '+totalSize);
+                            console.log('percent loaded: '+percent_loaded);
+                        console.groupEnd();
+
+                        $('#progress-'+file_id).attr('value', uploadedSize + uploadingSize);
+                        $('#progress-'+file_id).attr('max', totalSize);
+                    };
+
+                    FILES[file_id]['upload'].onUploadCompleted = function() {
+                        $('#progress-'+file_id).parent().text('Completed');
+                    };
+
+                    FILES[file_id]['upload'].start();
+                }
+        </script>
+    </body>
+</html>
